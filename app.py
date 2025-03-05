@@ -1,25 +1,30 @@
 from flask import Flask, request, jsonify, render_template
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from functools import lru_cache
 
 app = Flask(__name__)
 
-# Load mô hình BERTweet
-MODEL_NAME = "finiteautomata/bertweet-base-sentiment-analysis"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=3)
-
-# Xác định device (CPU/GPU)
+# Dùng mô hình nhẹ hơn để tăng tốc
+MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-model.eval()
 
-# Hàm phân tích cảm xúc
+# Cache model để không load lại mỗi request
+@lru_cache(maxsize=1)
+def get_model():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME).to(device)
+    model.eval()
+    return tokenizer, model
+
+# Hàm phân tích cảm xúc tối ưu
 def analyze(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-    inputs = {key: val.to(device) for key, val in inputs.items()}
+    tokenizer, model = get_model()
     
+    # Chuyển input thành tensor, đưa về đúng device
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True).to(device)
+
     with torch.no_grad():
         outputs = model(**inputs)
         scores = F.softmax(outputs.logits, dim=1).cpu().numpy().tolist()[0]
@@ -32,7 +37,7 @@ def analyze(text):
 @app.route('/analyze', methods=['POST'])
 def analyze_sentiment():
     data = request.json
-    text = data.get("text", "")
+    text = data.get("text", "").strip()
 
     if not text:
         return jsonify({"error": "No text provided"}), 400
